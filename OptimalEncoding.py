@@ -43,7 +43,7 @@ class OptimalEncoding(object):
         #Autoencoder 
         self.L1 = tf.reduce_mean(
             tf.reduce_sum(
-                tf.abs(self.Y - tf.tanh(self.Y_hat))/(tf.abs(self.std) + EPS) + tf.log(tf.abs(self.std) + EPS),
+                tf.abs(self.Y - tf.tanh(self.Y_hat))/tf.expand_dims((tf.abs(self.std) + EPS), 1) + tf.expand_dims(tf.log(tf.abs(self.std) + EPS), 1),
                 axis=1
             )
         )
@@ -54,15 +54,11 @@ class OptimalEncoding(object):
         )
         
         #Encoder entropy
-        #Maximum entropy distribution over latent space
-        #logp = lambda z: lib.binary_max_ent(z, tau=self.tau)
-        #Negative KL between max ent and latent posterior
-        #self.Negentropy = tf.reduce_mean(tf.einsum('ij,ij->i', self.Z, tf.stop_gradient(lib.phi_star(self.Z, logp))))
         #Column wise entropy
         p = tf.reduce_mean(self.probs, 0)
         self.Entropy = -tf.reduce_sum(p * tf.log(p + EPS) + (1-p) * tf.log(1-p + EPS)) #in nats
         
-    def train(self, x, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, tau_rate = 1e-4, task = 'autoencoder'):
+    def train(self, x, y=None, max_entropy=True, epochs=100, batch_size=64, lr=1e-3, tau_rate = 1e-4, task = 'autoencoder'):
         taskdict = {
             'autoencoder': self.L1,
             'classification': self.CrossEnt
@@ -74,7 +70,7 @@ class OptimalEncoding(object):
         
         if task in taskdict:
             self.taskLoss = taskdict[task]
-            self.Loss = self.taskLoss + (self.Entropy if min_entropy else tf.stop_gradient(self.Entropy))
+            self.Loss = self.taskLoss - (self.Entropy if max_entropy else tf.stop_gradient(self.Entropy))
         else:
             raise ValueError('task not supported yet')
 
@@ -126,7 +122,7 @@ class OptimalEncoding(object):
                 ents.append(ent)
                 stds.append(std)
 
-            print('Final Loss: %f' %loss)
+            print('Final task loss: %f' %(tasklosses[-1]))
             
             plt.figure()
             plt.plot(losses)
@@ -150,4 +146,4 @@ class OptimalEncoding(object):
         return(self.sess.run(self.Z, feed_dict = {self.X:x, self.g: g, self.tau: tau}))
     
     def decode(self, z):
-        return(self.sess.run(self.decoder(z, linear_out=True)))
+        return(self.sess.run(self.decoder(z, linear_out=True)[:,:-1]))
