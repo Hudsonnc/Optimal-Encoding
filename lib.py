@@ -33,6 +33,12 @@ def phi_star(Z, logp, h = -1):
     phi_mean = tf.reduce_mean(phi_mat, 0)
     return(phi_mean)
 
+def stein_d_H(Z, h = -1):
+    ker, dker = kernel(Z, h=h)
+    phi_mat = dker
+    phi_mean = tf.reduce_mean(phi_mat, 0)
+    return(phi_mean)
+
 
 ##########################Density Functions#######################
 def binary_max_ent(X, tau=.1):
