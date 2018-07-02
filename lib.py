@@ -13,13 +13,19 @@ def sq_dists(Z):
 def med(D):
     m = tf.contrib.distributions.percentile(D, 50)
     return m
-    
+
+def h(Z):
+    sqdists = sq_dists(Z)
+    medsq = med(sqdists)
+    h_ = medsq / tf.log(tf.to_float(tf.shape(Z)[0]))
+    return(h_)
+
 def kernel(Z, h = -1):
     sqdists = sq_dists(Z)
     if h <= 0:
         medsq = med(sqdists)
         h = medsq / tf.log(tf.to_float(tf.shape(Z)[0]))
-    h = tf.stop_gradient(h)
+        h = tf.stop_gradient(h)
     ker = tf.exp(-sqdists/h)
     A = tf.tile(tf.expand_dims(Z, 0), (tf.shape(Z)[0],1,1))
     T = tf.transpose(A, (1,0,2)) - A
