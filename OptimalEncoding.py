@@ -7,7 +7,7 @@ from tqdm import tqdm
 EPS = 1e-8
 
 import sys
-sys.path.append('NPEET_LNC/')
+sys.path.append('/home/AD/lbreston/NPEET_LNC/')
 from lnc import MI
 entropy = lambda x: MI.entropy(x,k=3,base=np.exp(1),intens=1e-10)
 
@@ -48,18 +48,25 @@ class OptimalEncoding(object):
                 tf.abs(self.Y - tf.tanh(self.Y_hat)),
                 axis=1
             )
-        self.Laplace_Homoskedastic = tf.log(tf.reduce_mean(self.AD))
-        self.Laplace_Heteroskedastic = tf.reduce_mean(tf.log(self.AD))
+        self.Laplace_Homoskedastic = tf.log(tf.reduce_mean(self.AD) + EPS)
+        self.Laplace_Heteroskedastic = tf.reduce_mean(tf.log(self.AD + EPS))
         
         #Classification
-        self.CrossEnt = tf.reduce_mean(
-            tf.nn.softmax_cross_entropy_with_logits_v2(labels=tf.stop_gradient(self.Y), logits=self.Y_hat)
+        #self.CrossEnt = tf.reduce_mean(
+         #   tf.nn.softmax_cross_entropy_with_logits(labels=tf.stop_gradient(self.Y), logits=self.Y_hat)
+       # )
+        self.CrossEnt_Expanded = tf.einsum(
+           'ij,ij->i',
+           self.Y, 
+            -tf.log(tf.exp(self.Y_hat) / (tf.expand_dims(tf.reduce_sum(tf.exp(self.Y_hat), 1), axis=-1) + EPS) + EPS)
         )
+        self.CrossEnt_Homoskedastic = .5*tf.log(tf.reduce_mean(self.CrossEnt_Expanded) + EPS)
+        self.CrossEnt_Heteroskedastic = .5*tf.reduce_mean(tf.log(self.CrossEnt_Expanded + EPS))
         
-        
-    def train(self, x, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, sigma = 1, bandwidth=-1, task = 'autoencoder', heteroskedastic = True):
+    def train(self, x, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, sigma = 1, bandwidth=-1, task = 'autoencoder', heteroskedastic = False):
         
         self.Laplace = self.Laplace_Heteroskedastic if heteroskedastic else self.Laplace_Homoskedastic
+        self.CrossEnt = self.CrossEnt_Heteroskedastic if heteroskedastic else self.CrossEnt_Homoskedastic
         
         taskdict = {
             'autoencoder': self.Laplace,
