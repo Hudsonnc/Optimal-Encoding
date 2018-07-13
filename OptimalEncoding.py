@@ -7,12 +7,15 @@ from tqdm import tqdm
 EPS = 1e-8
 
 import sys
-sys.path.append('/home/AD/lbreston/NPEET_LNC/')
+sys.path.append('NPEET_LNC/')
 from lnc import MI
 entropy = lambda x: MI.entropy(x,k=3,base=np.exp(1),intens=1e-10)
 
 class OptimalEncoding(object):
-    def __init__(self, encoder, decoder, k):
+    def __init__(self, encoder, decoder, k, activation = tf.tanh):
+        if activation is None:
+            activation = lambda x: x
+            
         #Encoder n_out must equal k
         self.encoder = encoder
         #Decoder n_in must equal k
@@ -45,11 +48,12 @@ class OptimalEncoding(object):
         #Losses 
         #Autoencoder 
         self.AD = tf.reduce_sum(
-                tf.abs(self.Y - tf.tanh(self.Y_hat)),
+                tf.abs(self.Y - activation(self.Y_hat)),
                 axis=1
             )
         self.Laplace_Homoskedastic = tf.log(tf.reduce_mean(self.AD) + EPS)
         self.Laplace_Heteroskedastic = tf.reduce_mean(tf.log(self.AD + EPS))
+        #self.Laplace = tf.reduce_mean(self.AD)
         
         #Classification
         #self.CrossEnt = tf.reduce_mean(
