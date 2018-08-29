@@ -7,7 +7,7 @@ from tqdm import tqdm
 EPS = 1e-8
 
 import sys
-sys.path.append('NPEET_LNC/')
+sys.path.append('/home/AD/lbreston/NPEET_LNC/')
 from lnc import MI
 entropy = lambda x: MI.entropy(x,k=3,base=np.exp(1),intens=1e-10)
 
@@ -40,7 +40,7 @@ class OptimalEncoding(object):
         #placeholder for sigma
         self.sigma = tf.placeholder(tf.float32, shape=(), name = 'sigma')
         #Add noise to encoding
-        self.Z = tf.expand_dims(self.f_X, 1) + (self.sigma * self.epsilon)
+        self.Z = tf.expand_dims(self.f_X, 1)*(1+self.sigma * self.epsilon)
         
         #Decode: reshape Z to (None*n_samples, k) to decode and then reshape back to (None, n_samples, y_dim) 
         self.Y_hat = tf.reshape(
@@ -104,7 +104,7 @@ class OptimalEncoding(object):
                 )
         self.Entropy =  tf.reduce_mean(tf.einsum('ij,ij->i', flat_Z, tf.stop_gradient(lib.stein_d_H(flat_Z, -1))))
         
-    def train(self, x, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, n_samples = 1, sigma = 1, task = 'autoencoder', heteroskedastic = False):
+    def train(self, x, x_val, y_val, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, n_samples = 1, sigma = 1, task = 'autoencoder', heteroskedastic = False):
         
         self.Laplace = self.Laplace_Heteroskedastic if heteroskedastic else self.Laplace_Homoskedastic
         self.CrossEnt = self.CrossEnt_Heteroskedastic if heteroskedastic else self.CrossEnt_Homoskedastic
@@ -115,6 +115,8 @@ class OptimalEncoding(object):
         }
         
         y = (x if y is None else y)
+        
+        
         
         if task in taskdict:
             self.taskLoss = taskdict[task]
@@ -133,6 +135,8 @@ class OptimalEncoding(object):
             sess.run(init)
 
             losses = []
+            val_accs = []
+            train_accs = []
             tasklosses = []
             ents = []
             knn_ents = []
@@ -145,6 +149,7 @@ class OptimalEncoding(object):
                 loss = 0
                 task_loss = 0
                 ent = 0
+          
                 
                 for batch in range(n_batches):
                     mb_idx = rand_idxs[batch*batch_size:(batch+1)*batch_size]
@@ -166,6 +171,23 @@ class OptimalEncoding(object):
                 zhat = self.encode(x_mb, sigma=sigma)
                 knn_ent = entropy(zhat)
                 
+                if epoch%1000==0:
+                    zhat_train = self.encode(x, sigma=sigma)
+                    pred_train = self.decode(zhat_train)
+                    pred_train = np.argmax(pred_train,1)
+                    true_train = np.argmax(y,1)
+                    train_acc = np.mean(pred_train == true_train)
+
+
+                    zhat_val = self.encode(x_val, sigma=sigma)
+                    pred_val = self.decode(zhat_val)
+                    pred_val = np.argmax(pred_val,1)
+                    true_val = np.argmax(y_val,1)
+                    val_acc = np.mean(pred_val == true_val)
+                    
+                    train_accs.append(train_acc)
+                    val_accs.append(val_acc)
+                               
                 losses.append(loss)
                 tasklosses.append(task_loss)
                 ents.append(ent)
@@ -179,17 +201,28 @@ class OptimalEncoding(object):
             plt.plot(losses)
             plt.title('total loss')
             
+            
             plt.figure()
             plt.plot(tasklosses)
             plt.title('task loss')
+            
             
             plt.figure()
             plt.plot(np.array(ents))
             plt.title('pseudo entropy loss')
             
+            
             plt.figure()
             plt.title('knn estimated entropy')
             plt.plot(knn_ents)
+            
+
+            plt.figure()
+            plt.title('train and validation accuracy')
+            plt.plot(train_accs)
+            plt.plot(val_accs)
+           
+            
 
     def encode(self, x, sigma = 0):
         epsilon = np.random.normal(0,1, size=(len(x), 1, self.k))
