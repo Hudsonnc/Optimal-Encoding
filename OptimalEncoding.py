@@ -7,7 +7,8 @@ from tqdm import tqdm
 EPS = 1e-8
 
 import sys
-sys.path.append('/home/AD/lbreston/NPEET_LNC/')
+import os
+sys.path.append(os.getcwd() + '/NPEET_LNC/')
 from lnc import MI
 entropy = lambda x: MI.entropy(x,k=3,base=np.exp(1),intens=1e-10)
 
@@ -116,8 +117,6 @@ class OptimalEncoding(object):
         
         y = (x if y is None else y)
         
-        
-        
         if task in taskdict:
             self.taskLoss = taskdict[task]
             self.Loss =  (self.Entropy if min_entropy else tf.stop_gradient(self.Entropy)) + self.taskLoss 
@@ -134,12 +133,22 @@ class OptimalEncoding(object):
         with sess.as_default():
             sess.run(init)
 
-            losses = []
-            val_accs = []
+            train_losses = []
+            val_losses = []
+            
             train_accs = []
-            tasklosses = []
-            ents = []
-            knn_ents = []
+            val_accs = []
+            
+            train_tasklosses = []
+            val_tasklosses = []
+            
+            train_ents = []
+            val_ents = []
+            
+            train_knn_ents = []
+            val_knn_ents = []
+            
+            val_epochs = []
             
             n_batches = int(x.shape[0]/float(batch_size))
             for epoch in tqdm(range(epochs)):        
@@ -170,57 +179,84 @@ class OptimalEncoding(object):
                     
                 zhat = self.encode(x_mb, sigma=sigma)
                 knn_ent = entropy(zhat)
-                
-                if epoch%1000==0:
-                    zhat_train = self.encode(x, sigma=sigma)
-                    pred_train = self.decode(zhat_train)
-                    pred_train = np.argmax(pred_train,1)
-                    true_train = np.argmax(y,1)
-                    train_acc = np.mean(pred_train == true_train)
-
-
-                    zhat_val = self.encode(x_val, sigma=sigma)
-                    pred_val = self.decode(zhat_val)
-                    pred_val = np.argmax(pred_val,1)
-                    true_val = np.argmax(y_val,1)
-                    val_acc = np.mean(pred_val == true_val)
-                    
-                    train_accs.append(train_acc)
-                    val_accs.append(val_acc)
                                
-                losses.append(loss)
-                tasklosses.append(task_loss)
-                ents.append(ent)
-                knn_ents.append(knn_ent)
-            
-            print('Sigma: %f' %(sigma))
+                train_losses.append(loss)
+                train_tasklosses.append(task_loss)
+                train_ents.append(ent)
+                train_knn_ents.append(knn_ent)
+                
+                if epoch % 100 == 0:
+                    if task == 'classification':
+                        zhat_train = self.encode(x, sigma=sigma)
+                        pred_train = self.decode(zhat_train)
+                        pred_train = np.argmax(pred_train,1)
+                        true_train = np.argmax(y,1)
+                        train_acc = np.mean(pred_train == true_train)
 
-            print('Final task loss: %f' %(tasklosses[-1]))
+
+                        zhat_val = self.encode(x_val, sigma=sigma)
+                        pred_val = self.decode(zhat_val)
+                        pred_val = np.argmax(pred_val,1)
+                        true_val = np.argmax(y_val,1)
+                        val_acc = np.mean(pred_val == true_val)
+
+                        train_accs.append(train_acc)
+                        val_accs.append(val_acc)
+                    
+                    rand_idxs = np.arange(x.shape[0])
+                    mb_idx = rand_idxs[batch*batch_size:(batch+1)*batch_size]
+                    
+                    epsilon = np.random.normal(0,1, size=(batch_size, n_samples, self.k))
+                    val_loss, val_task_loss, val_ent_curr = sess.run(
+                        [
+                            self.Loss, self.taskLoss, self.Entropy
+                        ], 
+                        feed_dict = {self.X:x_val[mb_idx], self.Y:y_val[mb_idx], self.epsilon:epsilon, self.sigma:sigma, self.n_samples: n_samples})
+                    val_knn_ent = entropy(zhat_val)
+                    
+                    val_losses.append(val_loss)
+                    val_tasklosses.append(val_task_loss)
+                    val_ents.append(val_ent_curr)
+                    val_knn_ents.append(val_knn_ent)
+                    
+                    val_epochs.append(epoch)
+                    
+                    
+            print('Final task loss: %f' %(train_tasklosses[-1]))
             
             plt.figure()
-            plt.plot(losses)
             plt.title('total loss')
+            plt.plot(train_losses, label = 'train')
+            plt.plot(val_epochs, val_losses, label = 'validation')
+            plt.legend()
             
             
             plt.figure()
-            plt.plot(tasklosses)
-            plt.title('task loss')
+            plt.title('%s loss' %(task))
+            plt.plot(train_tasklosses, label = 'train')
+            plt.plot(val_epochs, val_tasklosses, label = 'validation')
+            plt.legend()
             
             
             plt.figure()
-            plt.plot(np.array(ents))
             plt.title('pseudo entropy loss')
+            plt.plot(np.array(train_ents), label = 'train')
+            plt.plot(val_epochs, np.array(val_ents), label = 'validation')
+            plt.legend()
             
             
             plt.figure()
             plt.title('knn estimated entropy')
-            plt.plot(knn_ents)
+            plt.plot(train_knn_ents, label = 'train')
+            plt.plot(val_epochs, val_knn_ents, label = 'validation')
+            plt.legend()
             
-
-            plt.figure()
-            plt.title('train and validation accuracy')
-            plt.plot(train_accs)
-            plt.plot(val_accs)
+            if task == 'classification':
+                plt.figure()
+                plt.title('train and validation accuracy')
+                plt.plot(train_accs, label = 'train')
+                plt.plot(val_accs, label = 'validation')
+                plt.legend()
            
             
 
