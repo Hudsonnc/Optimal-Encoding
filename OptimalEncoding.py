@@ -186,6 +186,7 @@ class OptimalEncoding(object):
                 train_knn_ents.append(knn_ent)
                 
                 if epoch % 100 == 0:
+                    zhat_val = self.encode(x_val, sigma=sigma)
                     if task == 'classification':
                         zhat_train = self.encode(x, sigma=sigma)
                         pred_train = self.decode(zhat_train)
@@ -194,7 +195,6 @@ class OptimalEncoding(object):
                         train_acc = np.mean(pred_train == true_train)
 
 
-                        zhat_val = self.encode(x_val, sigma=sigma)
                         pred_val = self.decode(zhat_val)
                         pred_val = np.argmax(pred_val,1)
                         true_val = np.argmax(y_val,1)
@@ -202,7 +202,7 @@ class OptimalEncoding(object):
 
                         train_accs.append(train_acc)
                         val_accs.append(val_acc)
-                    
+                                      
                     rand_idxs = np.arange(x.shape[0])
                     mb_idx = rand_idxs[batch*batch_size:(batch+1)*batch_size]
                     
