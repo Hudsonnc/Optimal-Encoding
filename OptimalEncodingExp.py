@@ -1,0 +1,313 @@
+import numpy as np
+import tensorflow as tf
+from matplotlib import pyplot as plt
+import lib
+from tqdm import tqdm
+import string
+import random
+import os
+import numpy.lib.recfunctions as rfn
+
+
+
+
+EPS = 1e-8
+
+import sys
+import os
+sys.path.append(os.getcwd() + '/NPEET_LNC/')
+from lnc import MI
+entropy = lambda x: MI.entropy(x,k=3,base=np.exp(1),intens=1e-10)
+
+class OptimalEncoding(object):
+    def __init__(self, encoder, decoder, k, activation = tf.tanh, fname='./test',live=True):
+        if activation is None:
+            activation = lambda x: x
+        
+        self.live=live
+        
+        #File target
+        self.fname=fname
+            
+        #Encoder n_out must equal k
+        self.encoder = encoder
+        #Decoder n_in must equal k
+        self.decoder = decoder
+        
+        self.params = encoder.params + decoder.params
+        
+        self.X_dim = encoder.n_in
+        self.Y_dim = decoder.n_out
+        self.k = k
+        
+        #Data
+        self.X = tf.placeholder(tf.float32, shape=[None, self.X_dim], name='X')
+        self.Y = tf.placeholder(tf.float32, shape=[None, self.Y_dim], name='Y')
+        
+        #Encode
+        self.f_X = encoder(self.X, linear_out=True)
+        #placeholder for n_samples in latent space
+        self.n_samples = tf.placeholder(tf.int32, shape = (), name = 'n_samples')
+        #placeholder for epsilon
+        self.epsilon = tf.placeholder(tf.float32, shape=(None, None, self.k), name = 'epsilon')
+        #placeholder for sigma
+        self.sigma = tf.placeholder(tf.float32, shape=(), name = 'sigma')
+        #Add noise to encoding
+        self.Z = tf.expand_dims(self.f_X, 1)*(1+self.sigma * self.epsilon)
+        
+
+        
+        #Decode: reshape Z to (None*n_samples, k) to decode and then reshape back to (None, n_samples, y_dim) 
+        self.Y_hat = tf.reshape(
+            decoder(
+                tf.reshape(
+                    self.Z,
+                    tf.stack([-1, self.k])
+                ),
+                linear_out=True
+            ),
+            tf.stack([-1, self.n_samples, self.Y_dim])
+        )
+        
+        #Losses 
+        #Autoencoder 
+        self.Eltwise_Deviation = tf.abs(tf.expand_dims(self.Y, 1) - activation(self.Y_hat))
+        self.Laplace_Homoskedastic = tf.reduce_sum(#Sum result over features to get scalar (diagonal covariance)
+            tf.log(#log of mean features across all batchsize * n_samples (homoskedastic in columns)
+                tf.reduce_mean(#Mean across batchsize, n_samples.
+                    self.Eltwise_Deviation, 
+                    axis=(0,1)
+                ) + EPS
+            )
+        )
+        self.Laplace_Heteroskedastic = tf.reduce_mean(#Mean over batch_size to get scalar
+            tf.reduce_sum(#sum over features (diagonal covariance)
+                tf.log(#log of mean features across n_samples
+                    tf.reduce_mean(#mean across n_samples
+                        self.Eltwise_Deviation,
+                        axis=(1)
+                    ) + EPS
+                ),
+                axis=(-1)
+            )
+        )
+        
+        #Classification
+        self.Samplewise_CrossEnt = tf.einsum(
+           'ik,ijk->ij',
+           self.Y, 
+            -tf.log(tf.exp(self.Y_hat) / (tf.expand_dims(tf.reduce_sum(tf.exp(self.Y_hat), axis=-1), axis=-1) + EPS) + EPS)
+        )
+        self.CrossEnt_Homoskedastic = .5*tf.log(
+            tf.reduce_mean(#Mean over batchsize, n_samples 
+                self.Samplewise_CrossEnt
+            ) + EPS
+        )
+        self.CrossEnt_Heteroskedastic = .5*tf.reduce_mean( #Mean over batchsize
+            tf.log(
+                tf.reduce_mean(#Mean over n_samples
+                    self.Samplewise_CrossEnt,
+                    axis = (1)
+                ) + EPS
+            )
+        )
+        
+        #Stein entropy
+        flat_Z = tf.reshape(
+                    self.Z,
+                    tf.stack([-1, self.k])
+                )
+        self.Entropy =  tf.reduce_mean(tf.einsum('ij,ij->i', flat_Z, tf.stop_gradient(lib.stein_d_H(flat_Z, -1))))
+        
+       
+        
+    def train(self, x, x_val, y_val, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, n_samples = 1, sigma = 1, task = 'autoencoder', heteroskedastic = False):
+        
+        self.Laplace = self.Laplace_Heteroskedastic if heteroskedastic else self.Laplace_Homoskedastic
+        self.CrossEnt = self.CrossEnt_Heteroskedastic if heteroskedastic else self.CrossEnt_Homoskedastic
+        
+        taskdict = {
+            'autoencoder': self.Laplace,
+            'classification': self.CrossEnt
+        }
+        
+        y = (x if y is None else y)
+        
+        if task in taskdict:
+            self.taskLoss = taskdict[task]
+            self.Loss =  (self.Entropy if min_entropy else tf.stop_gradient(self.Entropy)) + self.taskLoss 
+        else:
+            raise ValueError('task not supported yet')
+
+        #Optimizer 
+        solver = tf.train.AdamOptimizer(learning_rate = lr).minimize(self.Loss, var_list=self.params)
+        
+        #Training
+        init = tf.global_variables_initializer()
+        sess = tf.Session()
+        self.sess = sess
+        with sess.as_default():
+            sess.run(init)
+
+            train_losses = []
+            val_losses = []
+            
+            train_accs = [] if task == 'classification' else [0]
+            val_accs = []  if task == 'classification' else [0]
+            
+            train_tasklosses = []
+            val_tasklosses = []
+            
+            train_ents = []
+            val_ents = []
+            
+            train_knn_ents = []
+            val_knn_ents = []
+            
+            val_epochs = []
+            
+            n_batches = int(x.shape[0]/float(batch_size))
+            for epoch in tqdm(range(epochs)):        
+                rand_idxs = np.arange(x.shape[0]) 
+                np.random.shuffle(rand_idxs)
+                
+                loss = 0
+                task_loss = 0
+                ent = 0
+          
+                
+                for batch in range(n_batches):
+                    mb_idx = rand_idxs[batch*batch_size:(batch+1)*batch_size]
+                    x_mb = x[mb_idx]
+                    y_mb = y[mb_idx]
+                    
+                    epsilon = np.random.normal(0,1, size=(batch_size, n_samples, self.k))
+                    
+                    _, loss_curr, taskloss_curr, ent_curr = sess.run(
+                        [
+                            solver, self.Loss, self.taskLoss, self.Entropy
+                        ], 
+                        feed_dict = {self.X:x_mb, self.Y:y_mb, self.epsilon:epsilon, self.sigma:sigma, self.n_samples: n_samples})
+                    
+                    loss += loss_curr/n_batches
+                    task_loss += taskloss_curr/n_batches
+                    ent += ent_curr/n_batches
+                    
+                zhat = self.encode(x_mb, sigma=sigma)
+                knn_ent = entropy(zhat)
+                               
+                train_losses.append(loss)
+                train_tasklosses.append(task_loss)
+                train_ents.append(ent)
+                train_knn_ents.append(knn_ent)
+                
+                if epoch % 100 == 0:
+                    zhat_val = self.encode(x_val, sigma=sigma)
+                    if task == 'classification':
+                        zhat_train = self.encode(x, sigma=sigma)
+                        pred_train = self.decode(zhat_train)
+                        pred_train = np.argmax(pred_train,1)
+                        true_train = np.argmax(y,1)
+                        train_acc = np.mean(pred_train == true_train)
+
+
+                        pred_val = self.decode(zhat_val)
+                        pred_val = np.argmax(pred_val,1)
+                        true_val = np.argmax(y_val,1)
+                        val_acc = np.mean(pred_val == true_val)
+
+                        train_accs.append(train_acc)
+                        val_accs.append(val_acc)
+                                      
+                    rand_idxs = np.arange(x.shape[0])
+                    mb_idx = rand_idxs[batch*batch_size:(batch+1)*batch_size]
+                    
+                    epsilon = np.random.normal(0,1, size=(batch_size, n_samples, self.k))
+                    val_loss, val_task_loss, val_ent_curr = sess.run(
+                        [
+                            self.Loss, self.taskLoss, self.Entropy
+                        ], 
+                        feed_dict = {self.X:x_val[mb_idx], self.Y:y_val[mb_idx], self.epsilon:epsilon, self.sigma:sigma, self.n_samples: n_samples})
+                    val_knn_ent = entropy(zhat_val)
+                    
+                    val_losses.append(val_loss)
+                    val_tasklosses.append(val_task_loss)
+                    val_ents.append(val_ent_curr)
+                    val_knn_ents.append(val_knn_ent)
+                    
+                    val_epochs.append(epoch)
+                    
+            #plotting       
+            if self.live:
+                print('Final task loss: %f' %(train_tasklosses[-1]))
+            
+                plt.figure()
+                plt.title('total loss')
+                plt.plot(train_losses, label = 'train')
+                plt.plot(val_epochs, val_losses, label = 'validation')
+                plt.legend()
+
+
+                plt.figure()
+                plt.title('%s loss' %(task))
+                plt.plot(train_tasklosses, label = 'train')
+                plt.plot(val_epochs, val_tasklosses, label = 'validation')
+                plt.legend()
+
+
+                plt.figure()
+                plt.title('pseudo entropy loss')
+                plt.plot(np.array(train_ents), label = 'train')
+                plt.plot(val_epochs, np.array(val_ents), label = 'validation')
+                plt.legend()
+
+
+                plt.figure()
+                plt.title('knn estimated entropy')
+                plt.plot(train_knn_ents, label = 'train')
+                plt.plot(val_epochs, val_knn_ents, label = 'validation')
+                plt.legend()
+
+                if task == 'classification':
+                    plt.figure()
+                    plt.title('train and validation accuracy')
+                    plt.plot(train_accs, label = 'train')
+                    plt.plot(val_accs, label = 'validation')
+                    plt.legend()
+
+            
+            
+            #saving  
+            
+            paramvals=np.array(sess.run(self.params))
+          
+            results={'parameters':np.array(paramvals),'val epochs':val_epochs,'total train loss':train_losses,'total val loss':val_losses,'train task loss':train_tasklosses, ' val task loss':val_tasklosses, 'train pseudoentropy loss':np.array(train_ents),'val pseudoentropy loss':np.array(val_ents),'train entropy':train_knn_ents,'val entropy':val_knn_ents}
+             
+            if task == 'classification':
+                 results.update({'train acc': train_accs,'val acc':val_accs})
+            
+            s=''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(5))
+            np.save(self.fname+s,results)
+            
+            entry=np.zeros(1,dtype={'names':['key','task','encoder widths','decoder widths','k','min entropy','train size','num epochs','batch size','learning rate','sigma','num samples','heteroskedastic','final train loss','final val loss','final train acc','final val acc','final train ent','final val ent'], 'formats':['U10','U20','U100','U100','i4','U10','i4','i4','i4','f4','f4','i4','U10','f4','f4','f4','f4','f4','f4']})
+            
+            entry[0]=(s,task,str(self.encoder.widths),str(self.decoder.widths),self.k,str(min_entropy),x.shape[0],epochs,batch_size,lr,sigma,n_samples,str(heteroskedastic),train_losses[-1],val_losses[-1], train_accs[-1],val_accs[-1],train_knn_ents[-1],val_knn_ents[-1]) 
+            
+            try:
+                  table= np.load(self.fname+'table')
+                  table=rfn.merge_arrays((table,entry), flatten = True, usemask = False)
+                  np.save(self.fname+'table',table)
+            except FileNotFoundError:
+                  np.save(self.fname+'table',entry)
+
+                
+            
+
+    def encode(self, x, sigma = 0):
+        epsilon = np.random.normal(0,1, size=(len(x), 1, self.k))
+        return(self.sess.run(self.Z, feed_dict = {self.X:x, self.epsilon:epsilon, self.sigma:sigma, self.n_samples: 1})[:,0,:])
+    
+    def decode(self, z):
+        return(self.sess.run(self.decoder(z, linear_out=True)))
+    
+
