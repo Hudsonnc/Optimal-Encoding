@@ -16,7 +16,7 @@ class OptimalEncoding(object):
     def __init__(self, encoder, decoder, k, activation = tf.tanh):
         if activation is None:
             activation = lambda x: x
-            
+        
         #Encoder n_out must equal k
         self.encoder = encoder
         #Decoder n_in must equal k
@@ -42,6 +42,8 @@ class OptimalEncoding(object):
         self.sigma = tf.placeholder(tf.float32, shape=(), name = 'sigma')
         #Add noise to encoding
         self.Z = tf.expand_dims(self.f_X, 1)*(1+self.sigma * self.epsilon)
+        
+
         
         #Decode: reshape Z to (None*n_samples, k) to decode and then reshape back to (None, n_samples, y_dim) 
         self.Y_hat = tf.reshape(
@@ -105,6 +107,8 @@ class OptimalEncoding(object):
                 )
         self.Entropy =  tf.reduce_mean(tf.einsum('ij,ij->i', flat_Z, tf.stop_gradient(lib.stein_d_H(flat_Z, -1))))
         
+       
+        
     def train(self, x, x_val, y_val, y=None, min_entropy=True, epochs=100, batch_size=64, lr=1e-3, n_samples = 1, sigma = 1, task = 'autoencoder', heteroskedastic = False):
         
         self.Laplace = self.Laplace_Heteroskedastic if heteroskedastic else self.Laplace_Homoskedastic
@@ -116,6 +120,7 @@ class OptimalEncoding(object):
         }
         
         y = (x if y is None else y)
+        y_val =(x_val if y_val is None else y_val)
         
         if task in taskdict:
             self.taskLoss = taskdict[task]
@@ -124,7 +129,7 @@ class OptimalEncoding(object):
             raise ValueError('task not supported yet')
 
         #Optimizer 
-        solver = tf.train.RMSPropOptimizer(learning_rate = lr).minimize(self.Loss, var_list=self.params)
+        solver = tf.train.AdamOptimizer(learning_rate = lr).minimize(self.Loss, var_list=self.params)
         
         #Training
         init = tf.global_variables_initializer()
@@ -221,6 +226,7 @@ class OptimalEncoding(object):
                     
                     val_epochs.append(epoch)
                     
+             
                     
             print('Final task loss: %f' %(train_tasklosses[-1]))
             
@@ -257,7 +263,7 @@ class OptimalEncoding(object):
                 plt.plot(train_accs, label = 'train')
                 plt.plot(val_accs, label = 'validation')
                 plt.legend()
-           
+                 
             
 
     def encode(self, x, sigma = 0):

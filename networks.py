@@ -6,6 +6,7 @@ class MLP(object):
     def __init__(self, n_in, n_out, widths, activation = tf.tanh, 
                  random_seed = None):
         
+        self.widths = widths
         self.n_in = n_in
         self.n_out = n_out
         self.depth = len(widths)
